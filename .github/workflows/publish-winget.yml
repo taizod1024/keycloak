@@ -1,4 +1,5 @@
 name: Publish winget (manual)
+run-name: "Publish winget - manual trigger"
 
 on:
   workflow_dispatch:
