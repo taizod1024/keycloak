@@ -154,18 +154,39 @@ jobs:
           $versionDir = Join-Path $manifestDir "manifests" "t" "$publisher" "$($cfg.packageName)" "$version"
           New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
 
+          $installerArchive = Join-Path $env:RUNNER_TEMP "$id-$version.zip"
+          Invoke-WebRequest -Uri $url -OutFile $installerArchive
+          $installerSha256 = (Get-FileHash -LiteralPath $installerArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($installerArchive)
+          try {
+            $launcherPattern = "(?i)(^|/)$([regex]::Escape($cfg.launcher))$"
+            $launcherEntries = @($zip.Entries | Where-Object { $_.FullName -match $launcherPattern })
+            if ($launcherEntries.Count -ne 1) {
+              throw "Expected exactly one $($cfg.launcher) entry in the package archive; found $($launcherEntries.Count)."
+            }
+            $nestedInstallerPath = $launcherEntries[0].FullName.Replace('\', '/')
+          }
+          finally {
+            $zip.Dispose()
+          }
+
           # Use PackageIdentifier for filenames (not packageName)
           $installerPath = Join-Path $versionDir "$id.installer.yaml"
           @(
             "PackageIdentifier: $id"
             "PackageVersion: $version"
-            "PackageLocale: en-US"
             "Installers:"
             "- Architecture: x64"
             "  InstallerUrl: $url"
+            "  InstallerSha256: $installerSha256"
             "  InstallerType: zip"
+            "  NestedInstallerType: portable"
+            "  NestedInstallerFiles:"
+            "    - RelativeFilePath: $nestedInstallerPath"
+            "      PortableCommandAlias: kc"
             "ManifestType: installer"
-            "ManifestVersion: 1.6.0"
+            "ManifestVersion: 1.12.0"
           ) -join "`n" | Out-File -FilePath $installerPath -Encoding utf8
 
           $defaultPath = Join-Path $versionDir "$id.yaml"
@@ -174,7 +195,7 @@ jobs:
             "PackageVersion: $version"
             "DefaultLocale: en-US"
             "ManifestType: version"
-            "ManifestVersion: 1.6.0"
+            "ManifestVersion: 1.12.0"
           ) -join "`n" | Out-File -FilePath $defaultPath -Encoding utf8
 
           $localePath = Join-Path $versionDir "$id.locale.en-US.yaml"
@@ -191,7 +212,7 @@ jobs:
             "LicenseUrl: $licenseUrl"
             "ShortDescription: $shortDescription"
             "ManifestType: defaultLocale"
-            "ManifestVersion: 1.6.0"
+            "ManifestVersion: 1.12.0"
           ) -join "`n" | Out-File -FilePath $localePath -Encoding utf8
 
           Write-Output "Created manifest files in $manifestDir"
