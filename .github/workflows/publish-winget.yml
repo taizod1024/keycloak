@@ -113,9 +113,9 @@ PackageIdentifier: $id
 PackageVersion: $version
 PackageLocale: en-US
 Installers:
-  - Architecture: x64
-    InstallerUrl: $url
-    InstallerType: zip
+- Architecture: x64
+  InstallerUrl: $url
+  InstallerType: zip
 ManifestType: installer
 ManifestVersion: 1.0.0
 "@
