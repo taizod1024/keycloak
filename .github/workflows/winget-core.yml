@@ -158,7 +158,7 @@ jobs:
           $versionDir = Join-Path $manifestDir "manifests" "t" "$publisher" "$($cfg.packageName)" "$version"
           New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
 
-$installerPath = Join-Path $versionDir "$id.installer.yaml"
+          $installerPath = Join-Path $versionDir "$id.installer.yaml"
           @(
             "PackageIdentifier: $id"
             "PackageVersion: $version"
