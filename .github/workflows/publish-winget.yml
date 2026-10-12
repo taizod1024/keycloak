@@ -1,4 +1,4 @@
-name: Publish to winget (manual)
+name: Publish winget (manual)
 
 on:
   workflow_dispatch:
