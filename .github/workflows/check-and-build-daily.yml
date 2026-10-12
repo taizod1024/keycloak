@@ -1,0 +1,127 @@
+name: Daily Check and Build
+
+on:
+  schedule:
+    # Run every day at 21:00 UTC (06:00 JST)
+    - cron: "0 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  check:
+    runs-on: windows-latest
+    outputs:
+      new_version: ${{ steps.compare.outputs.new_version }}
+      latest_upstream_tag: ${{ steps.get-latest.outputs.tag }}
+
+    steps:
+      - name: Get latest upstream tag
+        id: get-latest
+        run: |
+          $latestUpstreamUrl = "https://api.github.com/repos/keycloak/keycloak/releases/latest"
+          $latestInfo = Invoke-RestMethod -Headers @{
+            Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}"
+            "User-Agent" = "keycloak-winget-daily-check"
+          } -Uri $latestUpstreamUrl
+
+          if ([string]::IsNullOrWhiteSpace($latestInfo.tag_name)) {
+            throw "Unable to resolve latest Keycloak tag from keycloak/keycloak releases API."
+          }
+
+          $latestTag = $latestInfo.tag_name
+          Write-Output "tag=$latestTag" >> $env:GITHUB_OUTPUT
+          Write-Output "Latest Keycloak tag: $latestTag"
+
+      - name: Get last built version
+        id: get-last
+        run: |
+          function Get-LastBuiltVersion() {
+            $releasesUrl = "https://api.github.com/repos/${{ github.repository }}/releases"
+            $releases = Invoke-RestMethod -Headers @{
+              Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}"
+              "User-Agent" = "keycloak-winget-daily-check"
+            } -Uri $releasesUrl
+
+            if ($releases -and $releases.Count -gt 0) {
+              # Get the most recent release
+              $latest = $releases | Select-Object -First 1
+              return $latest.tag_name
+            }
+
+            return $null
+          }
+
+          $lastVersion = Get-LastBuiltVersion
+          Write-Output "last=$lastVersion" >> $env:GITHUB_OUTPUT
+          Write-Output "Last built version: $lastVersion"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          $latestTag = "${{ steps.get-latest.outputs.tag }}"
+          $lastVersion = "${{ steps.get-last.outputs.last }}"
+
+          $isNewVersion = $false
+          if ([string]::IsNullOrWhiteSpace($lastVersion)) {
+            Write-Output "No previous release found. Will build."
+            $isNewVersion = $true
+          }
+          elseif ($latestTag -ne $lastVersion) {
+            Write-Output "New version detected: $latestTag (last: $lastVersion)"
+            $isNewVersion = $true
+          }
+          else {
+            Write-Output "Already built version: $latestTag"
+          }
+
+          Write-Output "new_version=$($isNewVersion.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
+  build:
+    needs: check
+    if: needs.check.outputs.new_version == 'true'
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve upstream version
+        run: |
+          "VERSION=${{ needs.check.outputs.latest_upstream_tag }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build package
+        run: |
+          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
+          $assetName = $cfg.upstreamAsset.Replace('{version}', $env:VERSION)
+          $rootName = $cfg.upstreamRoot.Replace('{version}', $env:VERSION)
+          $entry = $cfg.entryScript.Replace('/', '\')
+
+          Invoke-WebRequest -Uri "https://github.com/$($cfg.upstreamRepo)/releases/download/$env:VERSION/$assetName" -OutFile upstream.zip
+          Expand-Archive -Path upstream.zip -DestinationPath dist
+          $root = Join-Path dist $rootName
+          if (-not (Test-Path (Join-Path $root $entry))) {
+            throw "$entry not found in $root"
+          }
+
+          # winget portable requires an exe, so add a launcher for the entry script.
+          (Get-Content launcher.cs -Raw).Replace('@ENTRY_SCRIPT@', $entry) | Set-Content -Path launcher.build.cs -Encoding utf8
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc /nologo /target:exe /out:"$root\$($cfg.launcher)" launcher.build.cs
+          if ($LASTEXITCODE -ne 0) { throw "Failed to compile launcher." }
+
+          Compress-Archive -Path $root -DestinationPath "$($cfg.packageName)-$env:VERSION-Windows-x64.zip"
+
+      - name: Create release
+        run: |
+          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
+          gh release create $env:VERSION "$($cfg.packageName)-$env:VERSION-Windows-x64.zip" `
+            --repo ${{ github.repository }} `
+            --title "$($cfg.packageName) $env:VERSION" `
+            --notes "$($cfg.packageName) $env:VERSION package for winget (adds $($cfg.launcher) launcher for $($cfg.entryScript))."
+          if ($LASTEXITCODE -ne 0) { throw "Failed to create release." }

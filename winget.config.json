@@ -1,0 +1,14 @@
+{
+  "upstreamRepo": "keycloak/keycloak",
+  "upstreamAsset": "keycloak-{version}.zip",
+  "upstreamRoot": "keycloak-{version}",
+  "entryScript": "bin/kc.bat",
+  "launcher": "kc.exe",
+  "packageId": "taizod1024.keycloak",
+  "packageName": "Keycloak",
+  "publisher": "taizod1024",
+  "shortDescription": "Keycloak identity and access management server",
+  "license": "Apache-2.0",
+  "licenseUrl": "https://github.com/keycloak/keycloak/blob/main/LICENSE.txt",
+  "dependencies": ["Microsoft.OpenJDK.21"]
+}

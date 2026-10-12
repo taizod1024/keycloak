@@ -1,0 +1,243 @@
+name: Publish to winget
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_latest_tag:
+        description: "Use latest release of this repository"
+        default: true
+        type: boolean
+      tag_name:
+        description: "Version"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  submit-winget:
+    runs-on: windows-latest
+    env:
+      WINGETCREATE_VERSION: 1.12.8.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release asset URL
+        id: release
+        run: |
+          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
+          $headers = @{
+            Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}"
+            "User-Agent" = "winget-package"
+          }
+          $base = "https://api.github.com/repos/${{ github.repository }}/releases"
+
+          if ("${{ inputs.use_latest_tag }}" -eq "true") {
+            $release = Invoke-RestMethod -Headers $headers -Uri "$base/latest"
+          }
+          else {
+            $tag = "${{ inputs.tag_name }}".Trim()
+            if ([string]::IsNullOrWhiteSpace($tag)) {
+              throw "tag_name is required when use_latest_tag is false."
+            }
+            $release = Invoke-RestMethod -Headers $headers -Uri "$base/tags/$tag"
+          }
+
+          $version = $release.tag_name.TrimStart('v')
+          $asset = $release.assets | Where-Object { $_.name -like "$($cfg.packageName)-*-Windows-x64.zip" } | Select-Object -First 1
+          if (-not $asset) {
+            throw "No release asset matched '$($cfg.packageName)-*-Windows-x64.zip'."
+          }
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "asset_url=$($asset.browser_download_url)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Install wingetcreate
+        run: |
+          $wingetCreateUrl = "https://github.com/microsoft/winget-create/releases/download/v$env:WINGETCREATE_VERSION/wingetcreate.exe"
+          Invoke-WebRequest -Uri $wingetCreateUrl -OutFile wingetcreate.exe
+          .\wingetcreate.exe info
+
+      - name: Submit package to winget-pkgs
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN || secrets.GH_PAT }}
+        run: |
+          function Normalize-Token([string]$value) {
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              return ""
+            }
+            return ($value -replace "`r|`n", "").Trim()
+          }
+
+          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
+          $id = $cfg.packageId
+          $publisher = $cfg.publisher
+          $shortDescription = $cfg.shortDescription
+          $license = $cfg.license
+          $licenseUrl = $cfg.licenseUrl
+          $launcherName = $cfg.launcher
+          $commandAlias = [System.IO.Path]::GetFileNameWithoutExtension($launcherName)
+          $dependencies = @($cfg.dependencies)
+          $version = "${{ steps.release.outputs.version }}"
+          $url = "${{ steps.release.outputs.asset_url }}"
+
+          $token = Normalize-Token $env:WINGET_TOKEN
+
+          if ([string]::IsNullOrWhiteSpace($token)) {
+            throw "No GitHub token is available for winget submission."
+          }
+
+          if ($token -notmatch '^[A-Za-z0-9_]+$') {
+            throw "GitHub token contains invalid characters. Re-save WINGET_GITHUB_TOKEN/GH_PAT without line breaks or spaces."
+          }
+
+          Write-Output "Submitting to winget: $id $version"
+          Write-Output "Installer URL: $url"
+
+          # Fast path: package already exists in winget-pkgs.
+          .\wingetcreate.exe update --urls $url --version $version $id --submit --token $token
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Output "Updated existing package successfully."
+            exit 0
+          }
+
+          # Fallback path: first-time package registration.
+          Write-Output "Package update failed. Trying first-time package registration flow..."
+
+          function Remove-ControlChars([string]$value) {
+            if ($null -eq $value) {
+              return ""
+            }
+
+            $chars = $value.ToCharArray() | Where-Object { [int]$_ -ge 32 -and [int]$_ -ne 127 }
+            return (-join $chars).Trim()
+          }
+
+          function Quote-Yaml([string]$value) {
+            $clean = Remove-ControlChars $value
+            $clean = $clean -replace "'", "''"
+            return "'" + $clean + "'"
+          }
+
+          function Write-Manifest([string]$path, [string[]]$lines) {
+            $lines -join "`n" | Out-File -FilePath $path -Encoding utf8
+          }
+
+          $manifestDir = Join-Path $pwd "winget-manifests"
+          if (Test-Path $manifestDir) {
+            Remove-Item -Path $manifestDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $manifestDir | Out-Null
+
+          $installerPath = Join-Path $env:RUNNER_TEMP "installer-$version.zip"
+          if (Test-Path $installerPath) {
+            Remove-Item -Path $installerPath -Force
+          }
+          Invoke-WebRequest -Uri $url -OutFile $installerPath
+          $sha256 = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($installerPath)
+          try {
+            $kcEntry = $archive.Entries |
+              Where-Object { $_.FullName -match ('(?i)(^|[/\\])' + [regex]::Escape($launcherName) + '$') } |
+              Select-Object -First 1
+          }
+          finally {
+            $archive.Dispose()
+          }
+
+          if (-not $kcEntry) {
+            throw "Unable to find $launcherName in installer archive."
+          }
+
+          $nestedInstallerRelativePath = $kcEntry.FullName -replace '\\', '/'
+
+          $qId = Quote-Yaml $id
+          $qVersion = Quote-Yaml $version
+          $qPublisher = Quote-Yaml $publisher
+          $qPackageName = Quote-Yaml $cfg.packageName
+          $qShortDescription = Quote-Yaml $shortDescription
+          $qLicense = Quote-Yaml $license
+          $qLicenseUrl = Quote-Yaml $licenseUrl
+          $qUrl = Quote-Yaml $url
+          $qSha256 = Quote-Yaml $sha256
+          $qNestedInstallerRelativePath = Quote-Yaml $nestedInstallerRelativePath
+
+          $idSegments = $id.Split('.')
+          $identifierPath = Join-Path (Join-Path $manifestDir "manifests") $idSegments[0].Substring(0, 1).ToLowerInvariant()
+          foreach ($segment in $idSegments) {
+            $identifierPath = Join-Path $identifierPath $segment
+          }
+
+          $packagePath = Join-Path $identifierPath $version
+          New-Item -ItemType Directory -Path $packagePath -Force | Out-Null
+
+          $versionManifestPath = Join-Path $packagePath "$id.yaml"
+          $installerManifestPath = Join-Path $packagePath "$id.installer.yaml"
+          $localeManifestPath = Join-Path $packagePath "$id.locale.en-US.yaml"
+
+          Write-Manifest $versionManifestPath @(
+            '# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json'
+            "PackageIdentifier: $qId"
+            "PackageVersion: $qVersion"
+            'DefaultLocale: en-US'
+            'ManifestType: version'
+            'ManifestVersion: 1.10.0'
+          )
+
+          $dependencyLines = @()
+          if ($dependencies.Count -gt 0) {
+            $dependencyLines += 'Dependencies:'
+            $dependencyLines += '  PackageDependencies:'
+            foreach ($dep in $dependencies) {
+              $dependencyLines += "    - PackageIdentifier: $(Quote-Yaml $dep)"
+            }
+          }
+
+          Write-Manifest $installerManifestPath (@(
+            '# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json'
+            "PackageIdentifier: $qId"
+            "PackageVersion: $qVersion"
+            'InstallerType: zip'
+            'NestedInstallerType: portable'
+            'NestedInstallerFiles:'
+            "  - RelativeFilePath: $qNestedInstallerRelativePath"
+            "    PortableCommandAlias: $(Quote-Yaml $commandAlias)"
+          ) + $dependencyLines + @(
+            'Installers:'
+            '  - Architecture: x64'
+            "    InstallerUrl: $qUrl"
+            "    InstallerSha256: $qSha256"
+            'ManifestType: installer'
+            'ManifestVersion: 1.10.0'
+          ))
+
+          Write-Manifest $localeManifestPath @(
+            '# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json'
+            "PackageIdentifier: $qId"
+            "PackageVersion: $qVersion"
+            'PackageLocale: en-US'
+            "Publisher: $qPublisher"
+            "PackageName: $qPackageName"
+            "ShortDescription: $qShortDescription"
+            "License: $qLicense"
+            "LicenseUrl: $qLicenseUrl"
+            'ManifestType: defaultLocale'
+            'ManifestVersion: 1.10.0'
+          )
+
+          .\wingetcreate.exe submit --prtitle "Add $id version $version" --token $token --no-open $packagePath
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to submit package manifest to winget-pkgs."
+          }
+
+          Write-Output "Created and submitted first-time package manifest successfully."
