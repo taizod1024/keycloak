@@ -1,4 +1,4 @@
-name: Daily Check and Build
+name: Daily Check and Build (scheduled)
 
 on:
   schedule:
