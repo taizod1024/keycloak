@@ -46,9 +46,33 @@ jobs:
 
       - name: Install wingetcreate
         run: |
-          $downloadUrl = "https://github.com/microsoft/winget-create/releases/download/v$($env:WINGETCREATE_VERSION)/wingetcreate.exe"
-          Invoke-WebRequest -Uri $downloadUrl -OutFile "wingetcreate.exe"
-          Write-Output "$(Get-Location)" | Add-Content $env:GITHUB_PATH
+          # Try to use system winget first
+          $wingetPath = $(Get-Command winget -ErrorAction SilentlyContinue).Source
+          if ($wingetPath) {
+            Write-Output "Using system winget: $wingetPath"
+            exit 0
+          }
+
+          # Try downloading wingetcreate from latest release
+          Write-Output "Attempting to download wingetcreate..."
+          try {
+            $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/winget-create/releases" `
+              -Headers @{"User-Agent" = "PowerShell"}
+            $latest = $releases | Where-Object { -not $_.prerelease } | Select-Object -First 1
+            $asset = $latest.assets | Where-Object { $_.name -eq "wingetcreate.exe" } | Select-Object -First 1
+            
+            if ($asset) {
+              $downloadUrl = $asset.browser_download_url
+              Write-Output "Found wingetcreate: $downloadUrl"
+              Invoke-WebRequest -Uri $downloadUrl -OutFile "wingetcreate.exe" -TimeoutSec 30
+              Write-Output "$(Get-Location)" | Add-Content $env:GITHUB_PATH
+            } else {
+              throw "No wingetcreate.exe asset found in latest release"
+            }
+          } catch {
+            Write-Output "Failed to download wingetcreate: $_"
+            exit 1
+          }
 
       - name: Publish to winget
         run: |
@@ -56,7 +80,21 @@ jobs:
           $assetUrl = "${{ steps.release.outputs.asset_url }}"
           $version = "${{ steps.release.outputs.version }}"
 
-          & wingetcreate.exe update --token $env:GH_TOKEN `
+          # Use wingetcreate if it exists, otherwise try winget
+          $wingetcreate = "wingetcreate.exe"
+          if (-not (Get-Command $wingetcreate -ErrorAction SilentlyContinue)) {
+            $wingetcreate = "winget"
+          }
+
+          Write-Output "Using: $wingetcreate"
+          Write-Output "Publishing $($cfg.packageId) version $version"
+          Write-Output "Asset URL: $assetUrl"
+
+          & $wingetcreate update --token $env:GH_TOKEN `
             --urls $assetUrl `
             --version $version `
             $cfg.packageId
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to publish to winget (exit code: $LASTEXITCODE)"
+          }
