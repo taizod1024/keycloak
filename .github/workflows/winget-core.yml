@@ -198,4 +198,8 @@ jobs:
           ) -join "`n" | Out-File -FilePath $localePath -Encoding utf8
 
           Write-Output "Created manifest files in $manifestDir"
-          .\wingetcreate.exe submit (Join-Path $manifestDir "manifests") --token $token
+
+          $manifestPath = Join-Path $manifestDir "manifests"
+          Write-Output "Submitting manifests from: $manifestPath"
+
+          .\wingetcreate.exe submit "$manifestPath" --token $token

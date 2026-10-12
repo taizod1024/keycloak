@@ -20,30 +20,81 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Get latest release
+      - name: Resolve release asset URL
         id: release
         run: |
-          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
-          $headers = @{
+          function Get-ReleaseByTag([string]$candidateTag) {
+            $releaseApiUrl = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$candidateTag"
+            return Invoke-RestMethod -Headers @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              "User-Agent" = "keycloak-winget-publish"
+            } -Uri $releaseApiUrl
+          }
+
+          # Get latest release
+          $releasesUrl = "https://api.github.com/repos/${{ github.repository }}/releases"
+          $releases = Invoke-RestMethod -Headers @{
             Authorization = "Bearer $env:GH_TOKEN"
             "User-Agent" = "keycloak-winget-publish"
-          }
-          $releasesUrl = "https://api.github.com/repos/${{ github.repository }}/releases"
-          $releases = Invoke-RestMethod -Headers $headers -Uri $releasesUrl
+          } -Uri $releasesUrl
 
           if (-not $releases -or $releases.Count -eq 0) {
             throw "No releases found."
           }
 
           $latest = $releases | Select-Object -First 1
-          $asset = $latest.assets | Where-Object { $_.name -like "*Windows-x64.zip" } | Select-Object -First 1
-          if (-not $asset) {
-            throw "Asset not found in latest release."
+          $latestVersion = $latest.tag_name
+
+          $tagsToTry = @($latestVersion)
+          if ($latestVersion.StartsWith('v')) {
+            $tagsToTry += $latestVersion.TrimStart('v')
+          }
+          else {
+            $tagsToTry += "v$latestVersion"
           }
 
-          Write-Output "version=$($latest.tag_name)" >> $env:GITHUB_OUTPUT
-          Write-Output "asset_url=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
-          Write-Output "Found release asset: $($asset.browser_download_url)"
+          $event = $null
+          foreach ($candidateTag in $tagsToTry) {
+            try {
+              $event = Get-ReleaseByTag $candidateTag
+              break
+            }
+            catch {
+              $statusCode = $null
+              try {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+              }
+              catch {
+              }
+
+              if ($statusCode -and $statusCode -ne 404) {
+                throw "Release tag lookup failed for '$candidateTag' with status ${statusCode}: $($_.Exception.Message)"
+              }
+
+              Write-Output "Release tag lookup failed for '$candidateTag'. Trying next candidate..."
+            }
+          }
+
+          if (-not $event) {
+            throw "Unable to find release for version '$latestVersion'."
+          }
+
+          $tag = $event.tag_name
+          $assetUrl = $null
+          if ($event.assets) {
+            $asset = $event.assets | Where-Object { $_.name -like "*Windows-x64.zip" } | Select-Object -First 1
+            if ($asset) {
+              $assetUrl = $asset.browser_download_url
+            }
+          }
+
+          if (-not $assetUrl) {
+            throw "Unable to find a downloadable asset in release '$tag'."
+          }
+
+          Write-Output "version=$tag" >> $env:GITHUB_OUTPUT
+          Write-Output "asset_url=$assetUrl" >> $env:GITHUB_OUTPUT
+          Write-Output "Found release asset: $assetUrl"
 
       - name: Install wingetcreate
         run: |
@@ -143,3 +194,13 @@ jobs:
           ) -join "`n" | Out-File -FilePath $localePath -Encoding utf8
 
           Write-Output "Created manifest files in $manifestDir"
+
+          $manifestPath = Join-Path $manifestDir "manifests"
+          Write-Output "Submitting manifests from: $manifestPath"
+
+          # Validate manifest directory structure
+          if (-not (Test-Path $manifestPath)) {
+            throw "Manifest directory does not exist: $manifestPath"
+          }
+
+          .\wingetcreate.exe submit "$manifestPath" --token $token
