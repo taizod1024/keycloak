@@ -200,12 +200,15 @@ jobs:
           Write-Output "Created manifest files in $manifestDir"
           Get-ChildItem -Recurse $manifestDir | Write-Output
 
-          $manifestPath = Join-Path $manifestDir "manifests"
+          # submit expects the directory containing the YAML files, not a parent with subdirectories.
+          $manifestPath = $versionDir
           Write-Output "Submitting manifests from: $manifestPath"
 
-          # Validate manifest directory structure
           if (-not (Test-Path $manifestPath)) {
             throw "Manifest directory does not exist: $manifestPath"
+          }
+          if ((Get-ChildItem -Path $manifestPath -File -Filter "*.yaml").Count -ne 3) {
+            throw "Expected exactly three manifest YAML files in: $manifestPath"
           }
 
           .\wingetcreate.exe submit "$manifestPath" --token $token
