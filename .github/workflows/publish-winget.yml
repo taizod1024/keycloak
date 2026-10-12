@@ -13,7 +13,7 @@ jobs:
   publish:
     runs-on: windows-latest
     env:
-      WINGETCREATE_VERSION: 1.12.8.0
+      WINGETCREATE_VERSION: 1.12.13.0
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
@@ -54,11 +54,101 @@ jobs:
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN || secrets.GH_PAT }}
         run: |
+          function Normalize-Token([string]$value) {
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              return ""
+            }
+            # Remove accidental line breaks/spaces that break Authorization headers.
+            return ($value -replace "`r|`n", "").Trim()
+          }
+
           $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
           $version = "${{ steps.release.outputs.version }}"
           $url = "${{ steps.release.outputs.asset_url }}"
+          $id = $cfg.packageId
+          $publisher = $cfg.publisher
+          $shortDescription = $cfg.shortDescription
+          $license = $cfg.license
+          $licenseUrl = $cfg.licenseUrl
 
-          .\wingetcreate.exe update --token $env:WINGET_TOKEN `
-            --urls $url `
-            --version $version `
-            $cfg.packageId
+          $token = Normalize-Token $env:WINGET_TOKEN
+
+          if ([string]::IsNullOrWhiteSpace($token)) {
+            throw "No GitHub token is available for winget submission."
+          }
+
+          if ($token -notmatch '^[A-Za-z0-9_]+$') {
+            throw "GitHub token contains invalid characters."
+          }
+
+          Write-Output "Submitting to winget: $id $version"
+          Write-Output "Installer URL: $url"
+
+          # Fast path: package already exists in winget-pkgs.
+          .\wingetcreate.exe update --urls $url --version $version $id --submit --token $token
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Output "Updated existing package successfully."
+            exit 0
+          }
+
+          # Fallback path: first-time package registration.
+          Write-Output "Package update failed. Trying first-time package registration flow..."
+
+          # Create manifest directory
+          $manifestDir = Join-Path $pwd "winget-manifests"
+          if (Test-Path $manifestDir) {
+            Remove-Item -Path $manifestDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $manifestDir | Out-Null
+
+          # Create version subdirectory (e.g., manifests/p/publisher/package/1.0.0)
+          $versionDir = Join-Path $manifestDir "manifests" "t" "$publisher" "$($cfg.packageName)" "$version"
+          New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
+
+          # Create installer manifest
+          $installerManifest = @"
+PackageIdentifier: $id
+PackageVersion: $version
+PackageLocale: en-US
+Installers:
+  - Architecture: x64
+    InstallerUrl: $url
+    InstallerType: zip
+ManifestType: installer
+ManifestVersion: 1.0.0
+"@
+          $installerManifest | Out-File -FilePath (Join-Path $versionDir "$($cfg.packageName).installer.yaml") -Encoding utf8
+
+          # Create default manifest
+          $defaultManifest = @"
+PackageIdentifier: $id
+PackageVersion: $version
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.0.0
+"@
+          $defaultManifest | Out-File -FilePath (Join-Path $versionDir "$($cfg.packageName).yaml") -Encoding utf8
+
+          # Create locale manifest
+          $localeManifest = @"
+PackageIdentifier: $id
+PackageVersion: $version
+PackageLocale: en-US
+Publisher: '$publisher'
+PublisherUrl: https://github.com/$publisher
+PublisherSupportUrl: https://github.com/${{ github.repository }}/issues
+PackageName: $($cfg.packageName)
+PackageUrl: https://github.com/${{ github.repository }}
+License: $license
+LicenseUrl: $licenseUrl
+ShortDescription: '$shortDescription'
+ManifestType: defaultLocale
+ManifestVersion: 1.0.0
+"@
+          $localeManifest | Out-File -FilePath (Join-Path $versionDir "$($cfg.packageName).locale.en-US.yaml") -Encoding utf8
+
+          Write-Output "Created manifest files in $manifestDir"
+          
+          # Submit new package
+          .\wingetcreate.exe submit (Join-Path $manifestDir "manifests") --token $token
