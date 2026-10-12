@@ -154,7 +154,8 @@ jobs:
           $versionDir = Join-Path $manifestDir "manifests" "t" "$publisher" "$($cfg.packageName)" "$version"
           New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
 
-          $installerPath = Join-Path $versionDir "$($cfg.packageName).installer.yaml"
+          # Use PackageIdentifier for filenames (not packageName)
+          $installerPath = Join-Path $versionDir "$id.installer.yaml"
           @(
             "PackageIdentifier: $id"
             "PackageVersion: $version"
@@ -164,19 +165,19 @@ jobs:
             "  InstallerUrl: $url"
             "  InstallerType: zip"
             "ManifestType: installer"
-            "ManifestVersion: 1.0.0"
+            "ManifestVersion: 1.6.0"
           ) -join "`n" | Out-File -FilePath $installerPath -Encoding utf8
 
-          $defaultPath = Join-Path $versionDir "$($cfg.packageName).yaml"
+          $defaultPath = Join-Path $versionDir "$id.yaml"
           @(
             "PackageIdentifier: $id"
             "PackageVersion: $version"
             "DefaultLocale: en-US"
             "ManifestType: version"
-            "ManifestVersion: 1.0.0"
+            "ManifestVersion: 1.6.0"
           ) -join "`n" | Out-File -FilePath $defaultPath -Encoding utf8
 
-          $localePath = Join-Path $versionDir "$($cfg.packageName).locale.en-US.yaml"
+          $localePath = Join-Path $versionDir "$id.locale.en-US.yaml"
           @(
             "PackageIdentifier: $id"
             "PackageVersion: $version"
@@ -190,10 +191,11 @@ jobs:
             "LicenseUrl: $licenseUrl"
             "ShortDescription: $shortDescription"
             "ManifestType: defaultLocale"
-            "ManifestVersion: 1.0.0"
+            "ManifestVersion: 1.6.0"
           ) -join "`n" | Out-File -FilePath $localePath -Encoding utf8
 
           Write-Output "Created manifest files in $manifestDir"
+          Get-ChildItem -Recurse $manifestDir | Write-Output
 
           $manifestPath = Join-Path $manifestDir "manifests"
           Write-Output "Submitting manifests from: $manifestPath"
