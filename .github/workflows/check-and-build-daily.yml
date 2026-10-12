@@ -89,7 +89,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve upstream version
         run: |
@@ -123,5 +123,60 @@ jobs:
           gh release create $env:VERSION "$($cfg.packageName)-$env:VERSION-Windows-x64.zip" `
             --repo ${{ github.repository }} `
             --title "$($cfg.packageName) $env:VERSION" `
-            --notes "$($cfg.packageName) $env:VERSION package for winget (adds $($cfg.launcher) launcher for $($cfg.entryScript))."
+            --notes "$($cfg.packageName) $env:VERSION package for winget (adds $($cfg.launcher) launcher for $($cfg.entryScript))." `
+            --latest
           if ($LASTEXITCODE -ne 0) { throw "Failed to create release." }
+
+  publish-winget:
+    needs: build
+    if: success()
+    runs-on: windows-latest
+    env:
+      WINGETCREATE_VERSION: 1.12.8.0
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Get latest release
+        id: release
+        run: |
+          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            "User-Agent" = "keycloak-winget-publish"
+          }
+          $releasesUrl = "https://api.github.com/repos/${{ github.repository }}/releases"
+          $releases = Invoke-RestMethod -Headers $headers -Uri $releasesUrl
+
+          if (-not $releases -or $releases.Count -eq 0) {
+            throw "No releases found."
+          }
+
+          $latest = $releases | Select-Object -First 1
+          $asset = $latest.assets | Where-Object { $_.name -like "*Windows-x64.zip" } | Select-Object -First 1
+          if (-not $asset) {
+            throw "Asset not found in latest release."
+          }
+
+          Write-Output "version=$($latest.tag_name)" >> $env:GITHUB_OUTPUT
+          Write-Output "asset_url=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
+          Write-Output "Found release asset: $($asset.browser_download_url)"
+
+      - name: Install wingetcreate
+        run: |
+          $version = $env:WINGETCREATE_VERSION
+          $downloadUrl = "https://github.com/microsoft/winget-create/releases/download/v${version}/wingetcreate.exe"
+          Invoke-WebRequest -Uri $downloadUrl -OutFile "wingetcreate.exe"
+          Write-Output "$(Get-Location)" | Add-Content $env:GITHUB_PATH
+
+      - name: Update winget package
+        run: |
+          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
+          $assetUrl = "${{ steps.release.outputs.asset_url }}"
+          $version = "${{ steps.release.outputs.version }}"
+
+          & wingetcreate.exe update --token ${{ secrets.GITHUB_TOKEN }} `
+            --urls $assetUrl `
+            --version $version `
+            $cfg.packageId
