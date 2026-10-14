@@ -3,6 +3,12 @@ run-name: "Publish winget - manual trigger"
 
 on:
   workflow_dispatch:
+    inputs:
+      replace_existing_version:
+        description: "Replace the existing latest manifest version (for correcting its installer hash)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -136,7 +142,19 @@ jobs:
           Write-Output "Submitting to winget: $id $version"
           Write-Output "Installer URL: $url"
 
-          .\wingetcreate.exe update --urls $url --version $version $id --submit --token $token
+          $updateArgs = @(
+            "update"
+            "--urls", $url
+            "--version", $version
+            $id
+            "--submit"
+            "--token", $token
+          )
+          if ("${{ inputs.replace_existing_version }}" -eq "true") {
+            $updateArgs += "--replace"
+          }
+
+          & .\wingetcreate.exe @updateArgs
 
           if ($LASTEXITCODE -eq 0) {
             Write-Output "Updated existing package successfully."
