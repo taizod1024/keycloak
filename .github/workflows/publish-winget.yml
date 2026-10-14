@@ -3,12 +3,6 @@ run-name: "Publish winget - manual trigger"
 
 on:
   workflow_dispatch:
-    inputs:
-      replace_existing_version:
-        description: "Replace the existing latest manifest version (for correcting its installer hash)"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -150,9 +144,6 @@ jobs:
             "--submit"
             "--token", $token
           )
-          if ("${{ inputs.replace_existing_version }}" -eq "true") {
-            $updateArgs += "--replace"
-          }
 
           & .\wingetcreate.exe @updateArgs
 
@@ -251,3 +242,6 @@ jobs:
           }
 
           .\wingetcreate.exe submit "$manifestPath" --token $token
+          if ($LASTEXITCODE -ne 0) {
+            throw "wingetcreate failed to submit the package manifest."
+          }
