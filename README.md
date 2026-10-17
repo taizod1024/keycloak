@@ -47,6 +47,7 @@ For more options and configuration, refer to [Keycloak Documentation](https://ww
 - **Build Source**: Official Keycloak releases from [keycloak/keycloak](https://github.com/keycloak/keycloak)
 - **Runtime**: Windows executable with launcher
 - **Dependencies**: Microsoft.OpenJDK.21
+- **Distribution**: Official Keycloak ZIP with a Windows launcher
 - **Launcher**: `kc.exe` wrapper for `bin/kc.bat`
 
 ## Automation
@@ -56,7 +57,7 @@ This repository includes automated workflows:
 - **Daily Check & Build** (`check-and-build-daily.yml`): Runs at 21:00 UTC daily
   - Checks for new upstream Keycloak releases
   - Builds and packages on version updates
-  - Creates GitHub releases with artifacts
+  - Creates GitHub releases and submits new packages to winget
 - **Publish on Release** (`publish-on-release.yml`): Triggered on release creation
   - Automatically submits new builds to winget-pkgs repository
   - Updates the `taizod1024.keycloak` package

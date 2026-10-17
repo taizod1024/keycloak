@@ -21,16 +21,24 @@ env:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      WINGETCREATE_VERSION: 1.12.13.0
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v5
 
       - name: Set version
+        id: version
         run: |
-          "VERSION=${{ inputs.version }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $version = "${{ inputs.version }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "version is required."
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Build package
         run: |
@@ -38,31 +46,72 @@ jobs:
           $assetName = $cfg.upstreamAsset.Replace('{version}', $env:VERSION)
           $rootName = $cfg.upstreamRoot.Replace('{version}', $env:VERSION)
           $entry = $cfg.entryScript.Replace('/', '\')
-
-          Invoke-WebRequest -Uri "https://github.com/$($cfg.upstreamRepo)/releases/download/$env:VERSION/$assetName" -OutFile upstream.zip
+          $releaseUrl = "https://api.github.com/repos/$($cfg.upstreamRepo)/releases/tags/$env:VERSION"
+          $release = Invoke-RestMethod -Uri $releaseUrl -Headers @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            "User-Agent" = "keycloak-winget-build"
+          }
+          $asset = @($release.assets | Where-Object { $_.name -eq $assetName })
+          if ($asset.Count -ne 1) {
+            throw "Expected exactly one upstream asset named '$assetName'; found $($asset.Count)."
+          }
+          Invoke-WebRequest -Uri $asset[0].browser_download_url -OutFile upstream.zip
           Expand-Archive -Path upstream.zip -DestinationPath dist
           $root = Join-Path dist $rootName
           if (-not (Test-Path (Join-Path $root $entry))) {
             throw "$entry not found in $root"
           }
 
-          # winget portable requires an exe, so add a launcher for the entry script.
           (Get-Content launcher.cs -Raw).Replace('@ENTRY_SCRIPT@', $entry) | Set-Content -Path launcher.build.cs -Encoding utf8
           $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           & $csc /nologo /target:exe /out:"$root\$($cfg.launcher)" launcher.build.cs
           if ($LASTEXITCODE -ne 0) { throw "Failed to compile launcher." }
 
-          Compress-Archive -Path $root -DestinationPath "$($cfg.packageName)-$env:VERSION-Windows-x64.zip"
+          $packagePath = "$($cfg.packageName)-$env:VERSION-Windows-x64.zip"
+          Compress-Archive -Path $root -DestinationPath $packagePath
+          "PACKAGE_PATH=$packagePath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Create release
+      - name: Create or update release
         run: |
           $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
-          gh release create $env:VERSION "$($cfg.packageName)-$env:VERSION-Windows-x64.zip" `
-            --repo ${{ github.repository }} `
-            --title "$($cfg.packageName) $env:VERSION" `
-            --notes "$($cfg.packageName) $env:VERSION package for winget (adds $($cfg.launcher) launcher for $($cfg.entryScript))." `
-            --latest
-          if ($LASTEXITCODE -ne 0) { throw "Failed to create release." }
+          $title = "$($cfg.packageName) $env:VERSION"
+          $notes = "$($cfg.packageName) $env:VERSION package for winget. Includes the upstream distribution and the $($cfg.launcher) launcher for $($cfg.entryScript)."
+
+          $releaseExists = $false
+          $releaseUrl = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$env:VERSION"
+          try {
+            Invoke-RestMethod -Uri $releaseUrl -Headers @{
+              Authorization = "Bearer $env:GITHUB_TOKEN"
+              "User-Agent" = "keycloak-winget-build"
+            } | Out-Null
+            $releaseExists = $true
+          }
+          catch {
+            $statusCode = $null
+            try {
+              $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            catch {
+            }
+            if ($statusCode -ne 404) {
+              throw
+            }
+          }
+
+          if ($releaseExists) {
+            gh release upload $env:VERSION $env:PACKAGE_PATH --repo ${{ github.repository }} --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Failed to upload the package asset to the existing release." }
+            gh release edit $env:VERSION --repo ${{ github.repository }} --title "$title" --notes "$notes" --latest
+            if ($LASTEXITCODE -ne 0) { throw "Failed to update the existing release." }
+          }
+          else {
+            gh release create $env:VERSION $env:PACKAGE_PATH `
+              --repo ${{ github.repository }} `
+              --title "$title" `
+              --notes "$notes" `
+              --latest
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create release." }
+          }
 
   publish:
     if: inputs.skip_publish != true
@@ -70,35 +119,9 @@ jobs:
     runs-on: windows-latest
     env:
       WINGETCREATE_VERSION: 1.12.13.0
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v5
-
-      - name: Get latest release
-        id: release
-        run: |
-          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
-          $headers = @{
-            Authorization = "Bearer $env:GH_TOKEN"
-            "User-Agent" = "keycloak-winget-publish"
-          }
-          $releasesUrl = "https://api.github.com/repos/${{ github.repository }}/releases"
-          $releases = Invoke-RestMethod -Headers $headers -Uri $releasesUrl
-
-          if (-not $releases -or $releases.Count -eq 0) {
-            throw "No releases found."
-          }
-
-          $latest = $releases | Select-Object -First 1
-          $asset = $latest.assets | Where-Object { $_.name -like "*Windows-x64.zip" } | Select-Object -First 1
-          if (-not $asset) {
-            throw "Asset not found in latest release."
-          }
-
-          Write-Output "version=$($latest.tag_name)" >> $env:GITHUB_OUTPUT
-          Write-Output "asset_url=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
-          Write-Output "Found release asset: $($asset.browser_download_url)"
 
       - name: Install wingetcreate
         run: |
@@ -106,133 +129,10 @@ jobs:
           Invoke-WebRequest -Uri $wingetCreateUrl -OutFile wingetcreate.exe
           .\wingetcreate.exe info
 
-      - name: Publish to winget
+      - name: Submit package to winget
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN || secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          function Normalize-Token([string]$value) {
-            if ([string]::IsNullOrWhiteSpace($value)) {
-              return ""
-            }
-            return ($value -replace "`r|`n", "").Trim()
-          }
-
-          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
-          $version = "${{ steps.release.outputs.version }}"
-          $url = "${{ steps.release.outputs.asset_url }}"
-          $id = $cfg.packageId
-          $publisher = $cfg.publisher
-          $shortDescription = $cfg.shortDescription
-          $license = $cfg.license
-          $licenseUrl = $cfg.licenseUrl
-
-          $token = Normalize-Token $env:WINGET_TOKEN
-
-          if ([string]::IsNullOrWhiteSpace($token)) {
-            throw "No GitHub token is available for winget submission."
-          }
-
-          if ($token -notmatch '^[A-Za-z0-9_]+$') {
-            throw "GitHub token contains invalid characters."
-          }
-
-          Write-Output "Submitting to winget: $id $version"
-          Write-Output "Installer URL: $url"
-
-          .\wingetcreate.exe update --urls $url --version $version $id --submit --token $token
-
-          if ($LASTEXITCODE -eq 0) {
-            Write-Output "Updated existing package successfully."
-            exit 0
-          }
-
-          Write-Output "Package update failed. Trying first-time package registration flow..."
-
-          $manifestDir = Join-Path $pwd "winget-manifests"
-          if (Test-Path $manifestDir) {
-            Remove-Item -Path $manifestDir -Recurse -Force
-          }
-          New-Item -ItemType Directory -Path $manifestDir | Out-Null
-
-          $versionDir = Join-Path $manifestDir "manifests" "t" "$publisher" "$($cfg.packageName)" "$version"
-          New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
-
-          $installerArchive = Join-Path $env:RUNNER_TEMP "$id-$version.zip"
-          Invoke-WebRequest -Uri $url -OutFile $installerArchive
-          $installerSha256 = (Get-FileHash -LiteralPath $installerArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead($installerArchive)
-          try {
-            $launcherPattern = "(?i)(^|/)$([regex]::Escape($cfg.launcher))$"
-            $launcherEntries = @($zip.Entries | Where-Object { $_.FullName -match $launcherPattern })
-            if ($launcherEntries.Count -ne 1) {
-              throw "Expected exactly one $($cfg.launcher) entry in the package archive; found $($launcherEntries.Count)."
-            }
-            $nestedInstallerPath = $launcherEntries[0].FullName.Replace('\', '/')
-          }
-          finally {
-            $zip.Dispose()
-          }
-
-          $installerPath = Join-Path $versionDir "$id.installer.yaml"
-          @(
-            "# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json"
-            "PackageIdentifier: $id"
-            "PackageVersion: $version"
-            "Installers:"
-            "- Architecture: x64"
-            "  InstallerUrl: $url"
-            "  InstallerSha256: $installerSha256"
-            "  InstallerType: zip"
-            "  NestedInstallerType: portable"
-            "  NestedInstallerFiles:"
-            "    - RelativeFilePath: $nestedInstallerPath"
-            "      PortableCommandAlias: kc"
-            "ManifestType: installer"
-            "ManifestVersion: 1.12.0"
-          ) -join "`n" | Out-File -FilePath $installerPath -Encoding utf8
-
-          $defaultPath = Join-Path $versionDir "$id.yaml"
-          @(
-            "# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json"
-            "PackageIdentifier: $id"
-            "PackageVersion: $version"
-            "DefaultLocale: en-US"
-            "ManifestType: version"
-            "ManifestVersion: 1.12.0"
-          ) -join "`n" | Out-File -FilePath $defaultPath -Encoding utf8
-
-          $localePath = Join-Path $versionDir "$id.locale.en-US.yaml"
-          @(
-            "# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json"
-            "PackageIdentifier: $id"
-            "PackageVersion: $version"
-            "PackageLocale: en-US"
-            "Publisher: $publisher"
-            "PublisherUrl: https://github.com/$publisher"
-            "PublisherSupportUrl: https://github.com/${{ github.repository }}/issues"
-            "PackageName: $($cfg.packageName)"
-            "PackageUrl: https://github.com/${{ github.repository }}"
-            "License: $license"
-            "LicenseUrl: $licenseUrl"
-            "ShortDescription: $shortDescription"
-            "ManifestType: defaultLocale"
-            "ManifestVersion: 1.12.0"
-          ) -join "`n" | Out-File -FilePath $localePath -Encoding utf8
-
-          Write-Output "Created manifest files in $manifestDir"
-          Get-ChildItem -Recurse $manifestDir | Write-Output
-
-          # submit expects the directory containing the YAML files, not a parent with subdirectories.
-          $manifestPath = $versionDir
-          Write-Output "Submitting manifests from: $manifestPath"
-
-          if (-not (Test-Path $manifestPath)) {
-            throw "Manifest directory does not exist: $manifestPath"
-          }
-          if ((Get-ChildItem -Path $manifestPath -File -Filter "*.yaml").Count -ne 3) {
-            throw "Expected exactly three manifest YAML files in: $manifestPath"
-          }
-
-          .\wingetcreate.exe submit "$manifestPath" --token $token
+          .\.github\scripts\submit-winget.ps1 -Version "${{ needs.build.outputs.version }}"
