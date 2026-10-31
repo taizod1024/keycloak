@@ -1,14 +1,16 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <?if $(Scope) = perMachine?>
     <?define UpgradeCode = "6B1D3F0E-2C5A-4E8B-9A47-5D2E7C1A8F30"?>
+    <?define Impersonate = "no"?>
   <?else?>
     <?define UpgradeCode = "A94C7E52-1B3D-4F68-8E05-3C7B9D2F4A61"?>
+    <?define Impersonate = "yes"?>
   <?endif?>
 
   <Package Name="$(PackageName)" Manufacturer="$(Manufacturer)" Version="$(Version)"
            UpgradeCode="$(var.UpgradeCode)" Scope="$(Scope)" InstallerVersion="500">
     <MajorUpgrade DowngradeErrorMessage="A newer version of $(PackageName) is already installed." />
-    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <MediaTemplate EmbedCab="yes" />
 
     <?if $(Scope) = perMachine?>
       <StandardDirectory Id="ProgramFiles64Folder">
@@ -23,8 +25,21 @@
     <?endif?>
 
     <ComponentGroup Id="KeycloakFiles" Directory="INSTALLFOLDER">
-      <Files Include="$(SourceDir)\**" />
+      <Component>
+        <File Source="install-keycloak.ps1" />
+      </Component>
     </ComponentGroup>
+
+    <!-- Downloads the official Keycloak ZIP, verifies its SHA256, and extracts it into INSTALLFOLDER. -->
+    <CustomAction Id="DownloadKeycloak" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="$(Impersonate)" Return="check"
+                  ExeCommand='"[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "[INSTALLFOLDER]install-keycloak.ps1" -Url "$(KeycloakUrl)" -Sha256 "$(KeycloakSha256)" -Target "[INSTALLFOLDER]."' />
+    <CustomAction Id="RemoveKeycloak" Directory="TempFolder" Execute="deferred" Impersonate="$(Impersonate)" Return="ignore"
+                  ExeCommand='"[SystemFolder]cmd.exe" /d /c rmdir /s /q "[INSTALLFOLDER]."' />
+
+    <InstallExecuteSequence>
+      <Custom Action="DownloadKeycloak" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="RemoveKeycloak" After="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
 
     <Feature Id="Main" Title="$(PackageName)">
       <ComponentGroupRef Id="KeycloakFiles" />

@@ -44,11 +44,11 @@ winget upgrade --id taizod1024.keycloak --exact --scope machine
 winget upgrade --id taizod1024.keycloak --exact --scope user
 ```
 
-Back up customized files such as `conf\keycloak.conf` before upgrading.
+Back up customized files such as `conf\keycloak.conf` before upgrading, although the installer keeps existing files under `conf`, `data`, `providers`, and `themes`.
 
 ### Manual Installation
 
-Download the MSI for your scope (`-x64-machine.msi` or `-x64-user.msi`) from [GitHub Releases](https://github.com/taizod1024/keycloak/releases) and run it. The package depends on Microsoft OpenJDK 21; install that runtime separately when installing manually.
+Download the MSI for your scope (`-x64-machine.msi` or `-x64-user.msi`) from [GitHub Releases](https://github.com/taizod1024/keycloak/releases) and run it; it downloads the official Keycloak ZIP during installation. The package depends on Microsoft OpenJDK 21; install that runtime separately when installing manually.
 
 ## Usage
 
@@ -72,8 +72,10 @@ For more options and configuration, refer to [Keycloak Documentation](https://ww
 - **Build Source**: Official Keycloak releases from [keycloak/keycloak](https://github.com/keycloak/keycloak)
 - **Runtime**: Microsoft OpenJDK 21 and Windows batch entry point
 - **Dependencies**: Microsoft.OpenJDK.21
-- **Distribution**: MSI (WiX) built from the official Keycloak ZIP, one per scope (`keycloak.wxs`)
+- **Distribution**: Small MSI (WiX) per scope (`keycloak.wxs`). At install time, `install-keycloak.ps1` downloads the official Keycloak ZIP from GitHub, verifies its SHA256, and extracts it into the fixed directory. The ZIP URL and hash are embedded in the MSI at build time.
 - **Entry point**: `bin\kc.bat`
+
+The installer needs network access to github.com. On upgrade, existing files under `conf`, `data`, `providers`, and `themes` are kept and only missing files are added; all other files are replaced.
 
 ## Automation
 

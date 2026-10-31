@@ -44,8 +44,6 @@ jobs:
         run: |
           $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
           $assetName = $cfg.upstreamAsset.Replace('{version}', $env:VERSION)
-          $rootName = $cfg.upstreamRoot.Replace('{version}', $env:VERSION)
-          $entry = $cfg.entryScript.Replace('/', '\')
           $releaseUrl = "https://api.github.com/repos/$($cfg.upstreamRepo)/releases/tags/$env:VERSION"
           $release = Invoke-RestMethod -Uri $releaseUrl -Headers @{
             Authorization = "Bearer $env:GITHUB_TOKEN"
@@ -55,12 +53,9 @@ jobs:
           if ($asset.Count -ne 1) {
             throw "Expected exactly one upstream asset named '$assetName'; found $($asset.Count)."
           }
-          Invoke-WebRequest -Uri $asset[0].browser_download_url -OutFile upstream.zip
-          Expand-Archive -Path upstream.zip -DestinationPath dist
-          $root = Join-Path dist $rootName
-          if (-not (Test-Path (Join-Path $root $entry))) {
-            throw "$entry not found in $root"
-          }
+          $upstreamUrl = $asset[0].browser_download_url
+          Invoke-WebRequest -Uri $upstreamUrl -OutFile upstream.zip
+          $upstreamSha256 = (Get-FileHash -Path upstream.zip -Algorithm SHA256).Hash
 
           if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') {
             throw "MSI requires a numeric major.minor.patch version; got '$env:VERSION'."
@@ -70,14 +65,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Failed to install WiX." }
           $wix = Join-Path $env:USERPROFILE ".dotnet\tools\wix.exe"
 
-          # The MSI installs the contents of the versioned folder directly into a fixed directory.
+          # The MSI is small: at install time it downloads the official ZIP and verifies this SHA256.
           $packagePaths = @()
           foreach ($scope in @(@{ Name = "perMachine"; Suffix = "machine" }, @{ Name = "perUser"; Suffix = "user" })) {
             $packagePath = "$($cfg.packageName)-$env:VERSION-x64-$($scope.Suffix).msi"
             & $wix build keycloak.wxs -arch x64 `
               -d Scope=$($scope.Name) -d Version=$env:VERSION `
               -d PackageName=$($cfg.packageName) -d Manufacturer=$($cfg.publisher) `
-              -d SourceDir="$((Resolve-Path $root).Path)" -o $packagePath
+              -d KeycloakUrl=$upstreamUrl -d KeycloakSha256=$upstreamSha256 -o $packagePath
             if ($LASTEXITCODE -ne 0) { throw "Failed to build $packagePath." }
             $packagePaths += $packagePath
           }
@@ -87,7 +82,7 @@ jobs:
         run: |
           $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
           $title = "$($cfg.packageName) $env:VERSION"
-          $notes = "$($cfg.packageName) $env:VERSION MSI packages for winget. Includes the upstream server distribution."
+          $notes = "$($cfg.packageName) $env:VERSION MSI packages for winget. They download the official Keycloak ZIP at install time and verify its SHA256."
           $packagePaths = $env:PACKAGE_PATHS -split ';'
 
           $releaseExists = $false
