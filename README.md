@@ -18,9 +18,9 @@ This repository provides automated builds and packaging of [Keycloak](https://ww
 
 ### Via winget
 
-The package is portable. WinGet adds the directory containing `kc.bat` to PATH. Choose a fixed installation directory and use the same scope and location when upgrading.
+The package is portable. WinGet adds the `bin` directory (which contains the `kc.exe` launcher for `kc.bat`) to PATH. Choose a fixed installation directory and use the same scope and location when upgrading.
 
-After installation, run `kc.bat start-dev` from a new terminal.
+After installation, run `kc start-dev` from a new terminal.
 
 For all users, install to a machine-wide directory:
 

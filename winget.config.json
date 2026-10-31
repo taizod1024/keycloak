@@ -3,6 +3,7 @@
   "upstreamAsset": "keycloak-{version}.zip",
   "upstreamRoot": "keycloak-{version}",
   "entryScript": "bin/kc.bat",
+  "launcher": "bin/kc.exe",
   "packageId": "taizod1024.keycloak",
   "packageName": "Keycloak",
   "publisher": "taizod1024",

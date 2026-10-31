@@ -49,8 +49,11 @@ try {
   $rootName = $cfg.upstreamRoot.Replace("{version}", $Version).Replace('\', '/')
   $expectedEntryScript = "$rootName/$($cfg.entryScript.Replace('\', '/'))"
   $archiveEntries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
-  if ($expectedEntryScript -notin $archiveEntries) {
-    throw "Package ZIP is missing required file '$expectedEntryScript'."
+  $expectedLauncher = "$rootName/$($cfg.launcher)"
+  foreach ($required in @($expectedEntryScript, $expectedLauncher)) {
+    if ($required -notin $archiveEntries) {
+      throw "Package ZIP is missing required file '$required'."
+    }
   }
 }
 finally {
@@ -95,7 +98,7 @@ Installers:
   InstallerType: zip
   NestedInstallerType: portable
   NestedInstallerFiles:
-  - RelativeFilePath: $expectedEntryScript
+  - RelativeFilePath: $expectedLauncher
 - Architecture: x64
   Scope: machine
   InstallerUrl: $InstallerUrl
@@ -103,7 +106,7 @@ Installers:
   InstallerType: zip
   NestedInstallerType: portable
   NestedInstallerFiles:
-  - RelativeFilePath: $expectedEntryScript
+  - RelativeFilePath: $expectedLauncher
 ArchiveBinariesDependOnPath: true
 ManifestType: installer
 ManifestVersion: 1.12.0

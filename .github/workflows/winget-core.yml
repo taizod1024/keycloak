@@ -62,6 +62,14 @@ jobs:
             throw "$entry not found in $root"
           }
 
+          # The launcher sits next to the entry script, so it only needs the script's file name.
+          $entryName = Split-Path $entry -Leaf
+          $launcherPath = Join-Path $root $cfg.launcher.Replace('/', '\')
+          (Get-Content launcher.cs -Raw).Replace('@ENTRY_SCRIPT@', $entryName) | Set-Content -Path launcher.build.cs -Encoding utf8
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc /nologo /target:exe /out:"$launcherPath" launcher.build.cs
+          if ($LASTEXITCODE -ne 0) { throw "Failed to compile launcher." }
+
           $packagePath = "$($cfg.packageName)-$env:VERSION-Windows-x64.zip"
           Compress-Archive -Path $root -DestinationPath $packagePath
           "PACKAGE_PATH=$packagePath" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -70,7 +78,7 @@ jobs:
         run: |
           $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
           $title = "$($cfg.packageName) $env:VERSION"
-          $notes = "$($cfg.packageName) $env:VERSION package for winget. Includes the upstream distribution with its Windows batch entry point."
+          $notes = "$($cfg.packageName) $env:VERSION package for winget. Includes the upstream distribution and the $($cfg.launcher) launcher for $($cfg.entryScript)."
 
           $releaseExists = $false
           $releaseUrl = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$env:VERSION"
