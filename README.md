@@ -48,7 +48,7 @@ winget upgrade --id taizod1024.keycloak --exact --scope user --location "$env:LO
 
 ### Manual Installation
 
-Download the latest release from [GitHub Releases](https://github.com/taizod1024/keycloak/releases) and extract the zip file. The package includes the upstream `bin\kc.bat` script and depends on Microsoft OpenJDK 21; install that runtime separately when installing manually.
+Download the latest release from [GitHub Releases](https://github.com/taizod1024/keycloak/releases) and extract the zip file. The package includes the upstream `bin\kc.bat` script and a `bin\kc.exe` launcher for it, and depends on Microsoft OpenJDK 21; install that runtime separately when installing manually.
 
 ## Usage
 
@@ -74,7 +74,11 @@ For more options and configuration, refer to [Keycloak Documentation](https://ww
 - **Runtime**: Windows batch entry point
 - **Dependencies**: Microsoft.OpenJDK.21
 - **Distribution**: Official Keycloak ZIP
-- **Entry point**: Upstream `bin/kc.bat`
+- **Entry point**: `bin/kc.exe` (launcher for the upstream `bin/kc.bat`)
+
+### Why `kc.exe`
+
+WinGet does not accept `.bat` files as the portable entry (`RelativeFilePath`), and only the directory of that entry is added to PATH. This package therefore adds a minimal `kc.exe` (built from `launcher.cs`) next to `kc.bat` in `bin`. It only forwards its arguments to `kc.bat` in the same directory, so `kc` works from PATH. The other upstream scripts in `bin` become available from PATH as well.
 
 ## Automation
 
