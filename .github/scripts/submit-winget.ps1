@@ -9,7 +9,10 @@ param(
   [string]$Version,
 
   [Parameter(Mandatory)]
-  [string]$InstallerUrl,
+  [string]$UserInstallerUrl,
+
+  [Parameter(Mandatory)]
+  [string]$MachineInstallerUrl,
 
   [Parameter(Mandatory)]
   [string]$Token
@@ -40,24 +43,28 @@ if (Test-Path -LiteralPath $manifestRoot) {
 }
 New-Item -ItemType Directory -Path $manifestRoot | Out-Null
 
-$archivePath = Join-Path $manifestRoot "$($cfg.packageName)-$Version-Windows-x64.zip"
-Invoke-WebRequest -Uri $InstallerUrl -OutFile $archivePath
-
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
-try {
-  $rootName = $cfg.upstreamRoot.Replace("{version}", $Version).Replace('\', '/')
-  $expectedEntryScript = "$rootName/$($cfg.entryScript.Replace('\', '/'))"
-  $archiveEntries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
-  $expectedLauncher = "$rootName/$($cfg.launcher)"
-  foreach ($required in @($expectedEntryScript, $expectedLauncher)) {
-    if ($required -notin $archiveEntries) {
-      throw "Package ZIP is missing required file '$required'."
-    }
-  }
+function Get-MsiProperty([string]$Path, [string]$Name) {
+  $installer = New-Object -ComObject WindowsInstaller.Installer
+  $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @((Resolve-Path -LiteralPath $Path).Path, 0))
+  $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database, @("SELECT Value FROM Property WHERE Property='$Name'"))
+  $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null) | Out-Null
+  $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+  $value = $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, 1)
+  $view.GetType().InvokeMember("Close", "InvokeMethod", $null, $view, $null) | Out-Null
+  [System.Runtime.InteropServices.Marshal]::ReleaseComObject($installer) | Out-Null
+  return $value
 }
-finally {
-  $archive.Dispose()
+
+$installers = @()
+foreach ($item in @(@{ Scope = "user"; Url = $UserInstallerUrl }, @{ Scope = "machine"; Url = $MachineInstallerUrl })) {
+  $msiPath = Join-Path $manifestRoot "$($cfg.packageName)-$Version-x64-$($item.Scope).msi"
+  Invoke-WebRequest -Uri $item.Url -OutFile $msiPath
+  $installers += @{
+    Scope       = $item.Scope
+    Url         = $item.Url
+    Sha256      = (Get-FileHash -LiteralPath $msiPath -Algorithm SHA256).Hash.ToUpperInvariant()
+    ProductCode = Get-MsiProperty $msiPath "ProductCode"
+  }
 }
 
 $separatorIndex = $PackageId.IndexOf(".")
@@ -68,7 +75,6 @@ if ($separatorIndex -lt 1 -or $separatorIndex -eq $PackageId.Length - 1) {
 $publisher = $PackageId.Substring(0, $separatorIndex)
 $packageIdentifierName = $PackageId.Substring($separatorIndex + 1)
 $publisherInitial = $publisher.Substring(0, 1).ToLowerInvariant()
-$installerSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToUpperInvariant()
 $versionDirectory = Join-Path $manifestRoot "manifests"
 $versionDirectory = Join-Path $versionDirectory $publisherInitial
 $versionDirectory = Join-Path $versionDirectory $publisher
@@ -85,29 +91,25 @@ if ($cfg.dependencies -and $cfg.dependencies.Count -gt 0) {
   }
 }
 
+$installerEntries = foreach ($installer in $installers) {
+@"
+- Architecture: x64
+  Scope: $($installer.Scope)
+  InstallerUrl: $($installer.Url)
+  InstallerSha256: $($installer.Sha256)
+  InstallerType: wix
+  ProductCode: '$($installer.ProductCode)'
+  UpgradeBehavior: install
+"@
+}
+
 $installerManifest = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 PackageIdentifier: $PackageId
 PackageVersion: $Version
 $($dependencyLines -join "`n")
 Installers:
-- Architecture: x64
-  Scope: user
-  InstallerUrl: $InstallerUrl
-  InstallerSha256: $installerSha256
-  InstallerType: zip
-  NestedInstallerType: portable
-  NestedInstallerFiles:
-  - RelativeFilePath: $expectedLauncher
-- Architecture: x64
-  Scope: machine
-  InstallerUrl: $InstallerUrl
-  InstallerSha256: $installerSha256
-  InstallerType: zip
-  NestedInstallerType: portable
-  NestedInstallerFiles:
-  - RelativeFilePath: $expectedLauncher
-ArchiveBinariesDependOnPath: true
+$($installerEntries -join "`n")
 ManifestType: installer
 ManifestVersion: 1.12.0
 "@
@@ -134,6 +136,10 @@ PackageUrl: https://github.com/$($cfg.packageRepository)
 License: $($cfg.license)
 LicenseUrl: $($cfg.licenseUrl)
 ShortDescription: $($cfg.shortDescription)
+Description: $($cfg.description)
+Moniker: $($cfg.moniker)
+Tags:
+$(($cfg.tags | ForEach-Object { "- $_" }) -join "`n")
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
 "@

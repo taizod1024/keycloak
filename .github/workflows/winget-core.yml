@@ -62,23 +62,33 @@ jobs:
             throw "$entry not found in $root"
           }
 
-          # The launcher sits next to the entry script, so it only needs the script's file name.
-          $entryName = Split-Path $entry -Leaf
-          $launcherPath = Join-Path $root $cfg.launcher.Replace('/', '\')
-          (Get-Content launcher.cs -Raw).Replace('@ENTRY_SCRIPT@', $entryName) | Set-Content -Path launcher.build.cs -Encoding utf8
-          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          & $csc /nologo /target:exe /out:"$launcherPath" launcher.build.cs
-          if ($LASTEXITCODE -ne 0) { throw "Failed to compile launcher." }
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') {
+            throw "MSI requires a numeric major.minor.patch version; got '$env:VERSION'."
+          }
 
-          $packagePath = "$($cfg.packageName)-$env:VERSION-Windows-x64.zip"
-          Compress-Archive -Path $root -DestinationPath $packagePath
-          "PACKAGE_PATH=$packagePath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { throw "Failed to install WiX." }
+          $wix = Join-Path $env:USERPROFILE ".dotnet\tools\wix.exe"
+
+          # The MSI installs the contents of the versioned folder directly into a fixed directory.
+          $packagePaths = @()
+          foreach ($scope in @(@{ Name = "perMachine"; Suffix = "machine" }, @{ Name = "perUser"; Suffix = "user" })) {
+            $packagePath = "$($cfg.packageName)-$env:VERSION-x64-$($scope.Suffix).msi"
+            & $wix build keycloak.wxs -arch x64 `
+              -d Scope=$($scope.Name) -d Version=$env:VERSION `
+              -d PackageName=$($cfg.packageName) -d Manufacturer=$($cfg.publisher) `
+              -d SourceDir="$((Resolve-Path $root).Path)" -o $packagePath
+            if ($LASTEXITCODE -ne 0) { throw "Failed to build $packagePath." }
+            $packagePaths += $packagePath
+          }
+          "PACKAGE_PATHS=$($packagePaths -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Create or update release
         run: |
           $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
           $title = "$($cfg.packageName) $env:VERSION"
-          $notes = "$($cfg.packageName) $env:VERSION package for winget. Includes the upstream distribution and the $($cfg.launcher) launcher for $($cfg.entryScript)."
+          $notes = "$($cfg.packageName) $env:VERSION MSI packages for winget. Includes the upstream server distribution."
+          $packagePaths = $env:PACKAGE_PATHS -split ';'
 
           $releaseExists = $false
           $releaseUrl = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$env:VERSION"
@@ -102,13 +112,13 @@ jobs:
           }
 
           if ($releaseExists) {
-            gh release upload $env:VERSION $env:PACKAGE_PATH --repo ${{ github.repository }} --clobber
+            gh release upload $env:VERSION @packagePaths --repo ${{ github.repository }} --clobber
             if ($LASTEXITCODE -ne 0) { throw "Failed to upload the package asset to the existing release." }
             gh release edit $env:VERSION --repo ${{ github.repository }} --title "$title" --notes "$notes" --latest
             if ($LASTEXITCODE -ne 0) { throw "Failed to update the existing release." }
           }
           else {
-            gh release create $env:VERSION $env:PACKAGE_PATH `
+            gh release create $env:VERSION @packagePaths `
               --repo ${{ github.repository }} `
               --title "$title" `
               --notes "$notes" `
@@ -137,12 +147,14 @@ jobs:
             Authorization = "Bearer $env:GH_TOKEN"
             "User-Agent" = "keycloak-winget-publish"
           } -Uri $releaseUrl
-          $assetName = "$($cfg.packageName)-$version-Windows-x64.zip"
-          $asset = @($release.assets | Where-Object { $_.name -eq $assetName })
-          if ($asset.Count -ne 1) {
-            throw "Expected exactly one package asset named '$assetName'; found $($asset.Count)."
+          foreach ($suffix in @("machine", "user")) {
+            $assetName = "$($cfg.packageName)-$version-x64-$suffix.msi"
+            $asset = @($release.assets | Where-Object { $_.name -eq $assetName })
+            if ($asset.Count -ne 1) {
+              throw "Expected exactly one package asset named '$assetName'; found $($asset.Count)."
+            }
+            "${suffix}_installer_url=$($asset[0].browser_download_url)" >> $env:GITHUB_OUTPUT
           }
-          "installer_url=$($asset[0].browser_download_url)" >> $env:GITHUB_OUTPUT
 
       - name: Install wingetcreate
         run: |
@@ -160,5 +172,6 @@ jobs:
             -WingetCreatePath ".\wingetcreate.exe" `
             -PackageId "taizod1024.keycloak" `
             -Version "${{ needs.build.outputs.version }}" `
-            -InstallerUrl "${{ steps.release.outputs.installer_url }}" `
+            -MachineInstallerUrl "${{ steps.release.outputs.machine_installer_url }}" `
+            -UserInstallerUrl "${{ steps.release.outputs.user_installer_url }}" `
             -Token $env:WINGET_TOKEN

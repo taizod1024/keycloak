@@ -18,67 +18,62 @@ This repository provides automated builds and packaging of [Keycloak](https://ww
 
 ### Via winget
 
-The package is portable. WinGet adds the `bin` directory (which contains the `kc.exe` launcher for `kc.bat`) to PATH. Choose a fixed installation directory and use the same scope and location when upgrading.
+The package is an MSI installer for the Keycloak server distribution. It installs to a fixed, version-independent directory, does not modify `PATH`, and installs Microsoft OpenJDK 21 as a package dependency. Start the server with `bin\kc.bat` from the installation directory.
 
-After installation, run `kc start-dev` from a new terminal.
+| Scope | Installation directory |
+|-------|------------------------|
+| machine (administrator) | `C:\Program Files\Keycloak` |
+| user | `%LOCALAPPDATA%\Programs\Keycloak` |
 
-For all users, install to a machine-wide directory:
-
-```powershell
-winget install --id taizod1024.keycloak --exact --scope machine --location "C:\Program Files\Keycloak"
-```
-
-Upgrade at the same location:
+For all users:
 
 ```powershell
-winget upgrade --id taizod1024.keycloak --exact --scope machine --location "C:\Program Files\Keycloak"
+winget install --id taizod1024.keycloak --exact --scope machine
 ```
 
 For the current user only, without administrator privileges:
 
 ```powershell
-winget install --id taizod1024.keycloak --exact --scope user --location "$env:LOCALAPPDATA\Programs\Keycloak"
+winget install --id taizod1024.keycloak --exact --scope user
 ```
 
-Upgrade at the same location:
+Upgrade with the same scope; the new version replaces the previous one in the same directory:
 
 ```powershell
-winget upgrade --id taizod1024.keycloak --exact --scope user --location "$env:LOCALAPPDATA\Programs\Keycloak"
+winget upgrade --id taizod1024.keycloak --exact --scope machine
+winget upgrade --id taizod1024.keycloak --exact --scope user
 ```
+
+Back up customized files such as `conf\keycloak.conf` before upgrading.
 
 ### Manual Installation
 
-Download the latest release from [GitHub Releases](https://github.com/taizod1024/keycloak/releases) and extract the zip file. The package includes the upstream `bin\kc.bat` script and a `bin\kc.exe` launcher for it, and depends on Microsoft OpenJDK 21; install that runtime separately when installing manually.
+Download the MSI for your scope (`-x64-machine.msi` or `-x64-user.msi`) from [GitHub Releases](https://github.com/taizod1024/keycloak/releases) and run it. The package depends on Microsoft OpenJDK 21; install that runtime separately when installing manually.
 
 ## Usage
 
-After installation, run Keycloak from a new command-line window:
+From the Keycloak installation directory, run the server:
 
 ```cmd
+bin\kc.bat start-dev
+```
+
+Or change into the `bin` directory first:
+
+```cmd
+cd bin
 kc.bat start-dev
 ```
-
-Or use the batch script directly:
-
-```cmd
-keycloak-<version>\bin\kc.bat start-dev
-```
-
-Replace `<version>` with the version in the extracted directory name.
 
 For more options and configuration, refer to [Keycloak Documentation](https://www.keycloak.org/documentation).
 
 ## Technical Details
 
 - **Build Source**: Official Keycloak releases from [keycloak/keycloak](https://github.com/keycloak/keycloak)
-- **Runtime**: Windows batch entry point
+- **Runtime**: Microsoft OpenJDK 21 and Windows batch entry point
 - **Dependencies**: Microsoft.OpenJDK.21
-- **Distribution**: Official Keycloak ZIP
-- **Entry point**: `bin/kc.exe` (launcher for the upstream `bin/kc.bat`)
-
-### Why `kc.exe`
-
-WinGet does not accept `.bat` files as the portable entry (`RelativeFilePath`), and only the directory of that entry is added to PATH. This package therefore adds a minimal `kc.exe` (built from `launcher.cs`) next to `kc.bat` in `bin`. It only forwards its arguments to `kc.bat` in the same directory, so `kc` works from PATH. The other upstream scripts in `bin` become available from PATH as well.
+- **Distribution**: MSI (WiX) built from the official Keycloak ZIP, one per scope (`keycloak.wxs`)
+- **Entry point**: `bin\kc.bat`
 
 ## Automation
 

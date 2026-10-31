@@ -32,13 +32,15 @@ jobs:
           $latest = $releases | Select-Object -First 1
           $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
           $version = $latest.tag_name
-          $assetName = "$($cfg.packageName)-$version-Windows-x64.zip"
-          $asset = @($latest.assets | Where-Object { $_.name -eq $assetName })
-          if ($asset.Count -ne 1) {
-            throw "Expected exactly one package asset named '$assetName'; found $($asset.Count)."
-          }
           "version=$version" >> $env:GITHUB_OUTPUT
-          "installer_url=$($asset[0].browser_download_url)" >> $env:GITHUB_OUTPUT
+          foreach ($suffix in @("machine", "user")) {
+            $assetName = "$($cfg.packageName)-$version-x64-$suffix.msi"
+            $asset = @($latest.assets | Where-Object { $_.name -eq $assetName })
+            if ($asset.Count -ne 1) {
+              throw "Expected exactly one package asset named '$assetName'; found $($asset.Count)."
+            }
+            "${suffix}_installer_url=$($asset[0].browser_download_url)" >> $env:GITHUB_OUTPUT
+          }
 
       - name: Install wingetcreate
         run: |
@@ -56,5 +58,6 @@ jobs:
             -WingetCreatePath ".\wingetcreate.exe" `
             -PackageId "taizod1024.keycloak" `
             -Version "${{ steps.release.outputs.version }}" `
-            -InstallerUrl "${{ steps.release.outputs.installer_url }}" `
+            -MachineInstallerUrl "${{ steps.release.outputs.machine_installer_url }}" `
+            -UserInstallerUrl "${{ steps.release.outputs.user_installer_url }}" `
             -Token $env:WINGET_TOKEN

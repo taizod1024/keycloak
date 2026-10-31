@@ -1,0 +1,33 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?if $(Scope) = perMachine?>
+    <?define UpgradeCode = "6B1D3F0E-2C5A-4E8B-9A47-5D2E7C1A8F30"?>
+  <?else?>
+    <?define UpgradeCode = "A94C7E52-1B3D-4F68-8E05-3C7B9D2F4A61"?>
+  <?endif?>
+
+  <Package Name="$(PackageName)" Manufacturer="$(Manufacturer)" Version="$(Version)"
+           UpgradeCode="$(var.UpgradeCode)" Scope="$(Scope)" InstallerVersion="500">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of $(PackageName) is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <?if $(Scope) = perMachine?>
+      <StandardDirectory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="$(PackageName)" />
+      </StandardDirectory>
+    <?else?>
+      <StandardDirectory Id="LocalAppDataFolder">
+        <Directory Id="ProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="$(PackageName)" />
+        </Directory>
+      </StandardDirectory>
+    <?endif?>
+
+    <ComponentGroup Id="KeycloakFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(SourceDir)\**" />
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="$(PackageName)">
+      <ComponentGroupRef Id="KeycloakFiles" />
+    </Feature>
+  </Package>
+</Wix>
