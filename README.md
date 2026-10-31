@@ -10,7 +10,7 @@ Keycloak packaging for Windows via winget.
 This repository provides automated builds and packaging of [Keycloak](https://www.keycloak.org/), an open-source identity and access management (IAM) server.
 
 - **Source**: Built from the [official Keycloak source](https://github.com/keycloak/keycloak)
-- **Packaging**: Packaged for [winget](https://github.com/microsoft/winget-pkgs) with Windows launcher
+- **Packaging**: Official Keycloak distribution packaged for [winget](https://github.com/microsoft/winget-pkgs)
 - **Automation**: Daily version checks and automated builds on upstream updates
 - **License**: Apache-2.0 (Keycloak upstream)
 
@@ -18,37 +18,63 @@ This repository provides automated builds and packaging of [Keycloak](https://ww
 
 ### Via winget
 
-```cmd
-winget install taizod1024.keycloak
+The package is portable. WinGet adds the directory containing `kc.bat` to PATH. Choose a fixed installation directory and use the same scope and location when upgrading.
+
+After installation, run `kc.bat start-dev` from a new terminal.
+
+For all users, install to a machine-wide directory:
+
+```powershell
+winget install --id taizod1024.keycloak --exact --scope machine --location "C:\Program Files\Keycloak"
+```
+
+Upgrade at the same location:
+
+```powershell
+winget upgrade --id taizod1024.keycloak --exact --scope machine --location "C:\Program Files\Keycloak"
+```
+
+For the current user only, without administrator privileges:
+
+```powershell
+winget install --id taizod1024.keycloak --exact --scope user --location "$env:LOCALAPPDATA\Programs\Keycloak"
+```
+
+Upgrade at the same location:
+
+```powershell
+winget upgrade --id taizod1024.keycloak --exact --scope user --location "$env:LOCALAPPDATA\Programs\Keycloak"
 ```
 
 ### Manual Installation
 
-Download the latest release from [GitHub Releases](https://github.com/taizod1024/keycloak/releases) and extract the zip file.
+Download the latest release from [GitHub Releases](https://github.com/taizod1024/keycloak/releases) and extract the zip file. The package includes the upstream `bin\kc.bat` script and depends on Microsoft OpenJDK 21; install that runtime separately when installing manually.
 
 ## Usage
 
-After installation, run Keycloak from the command line:
+After installation, run Keycloak from a new command-line window:
 
 ```cmd
-kc.exe start-dev
+kc.bat start-dev
 ```
 
 Or use the batch script directly:
 
 ```cmd
-keycloak\bin\kc.bat start-dev
+keycloak-<version>\bin\kc.bat start-dev
 ```
+
+Replace `<version>` with the version in the extracted directory name.
 
 For more options and configuration, refer to [Keycloak Documentation](https://www.keycloak.org/documentation).
 
 ## Technical Details
 
 - **Build Source**: Official Keycloak releases from [keycloak/keycloak](https://github.com/keycloak/keycloak)
-- **Runtime**: Windows executable with launcher
+- **Runtime**: Windows batch entry point
 - **Dependencies**: Microsoft.OpenJDK.21
-- **Distribution**: Official Keycloak ZIP with a Windows launcher
-- **Launcher**: `kc.exe` wrapper for `bin/kc.bat`
+- **Distribution**: Official Keycloak ZIP
+- **Entry point**: Upstream `bin/kc.bat`
 
 ## Automation
 

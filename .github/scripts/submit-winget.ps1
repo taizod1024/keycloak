@@ -1,53 +1,78 @@
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$Version
+  [Parameter(Mandatory)]
+  [string]$WingetCreatePath,
+
+  [Parameter(Mandatory)]
+  [string]$PackageId,
+
+  [Parameter(Mandatory)]
+  [string]$Version,
+
+  [Parameter(Mandatory)]
+  [string]$InstallerUrl,
+
+  [Parameter(Mandatory)]
+  [string]$Token
 )
 
 $ErrorActionPreference = "Stop"
 
-$cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
-$assetName = "$($cfg.packageName)-$Version-Windows-x64.zip"
-$releaseUrl = "https://api.github.com/repos/$($cfg.packageRepository)/releases/tags/$Version"
-$release = Invoke-RestMethod -Uri $releaseUrl -Headers @{
-  Authorization = "Bearer $env:GITHUB_TOKEN"
-  "User-Agent" = "keycloak-winget-publish"
+$cfg = Get-Content (Join-Path $PSScriptRoot "..\..\winget.config.json") -Raw | ConvertFrom-Json
+if ([string]::IsNullOrWhiteSpace($Token)) {
+  throw "No GitHub token is available for winget submission."
 }
-$asset = @($release.assets | Where-Object { $_.name -eq $assetName })
-if ($asset.Count -ne 1) {
-  throw "Expected exactly one upstream asset named '$assetName' for Keycloak $Version; found $($asset.Count)."
+if ($Token -notmatch '^[A-Za-z0-9_]+$') {
+  throw "GitHub token contains invalid characters."
+}
+if ($PackageId -ne $cfg.packageId) {
+  throw "PackageId must match winget.config.json ($($cfg.packageId))."
+}
+if ($Version -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$') {
+  throw "Version contains invalid characters."
+}
+if (-not (Test-Path -LiteralPath $WingetCreatePath -PathType Leaf)) {
+  throw "wingetcreate was not found at '$WingetCreatePath'."
 }
 
-$url = $asset[0].browser_download_url
-$archivePath = Join-Path $env:RUNNER_TEMP "$($cfg.packageId)-$Version.zip"
-Invoke-WebRequest -Uri $url -OutFile $archivePath
-$installerSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$manifestRoot = Join-Path $env:RUNNER_TEMP "winget-manifest"
+if (Test-Path -LiteralPath $manifestRoot) {
+  Remove-Item -LiteralPath $manifestRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Path $manifestRoot | Out-Null
+
+$archivePath = Join-Path $manifestRoot "$($cfg.packageName)-$Version-Windows-x64.zip"
+Invoke-WebRequest -Uri $InstallerUrl -OutFile $archivePath
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
 try {
-  $launcherPattern = "(?i)(^|/)$([regex]::Escape($cfg.launcher))$"
-  $entries = @($archive.Entries | Where-Object { $_.FullName -match $launcherPattern })
-  if ($entries.Count -ne 1) {
-    throw "Expected exactly one '$($cfg.launcher)' entry in the package archive; found $($entries.Count)."
+  $rootName = $cfg.upstreamRoot.Replace("{version}", $Version).Replace('\', '/')
+  $expectedEntryScript = "$rootName/$($cfg.entryScript.Replace('\', '/'))"
+  $archiveEntries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+  if ($expectedEntryScript -notin $archiveEntries) {
+    throw "Package ZIP is missing required file '$expectedEntryScript'."
   }
-  $nestedInstallerPath = $entries[0].FullName.Replace('\', '/')
 }
 finally {
   $archive.Dispose()
 }
 
-$token = ($env:WINGET_TOKEN -replace "`r|`n", "").Trim()
-if ([string]::IsNullOrWhiteSpace($token)) {
-  throw "No GitHub token is available for winget submission."
-}
-if ($token -notmatch '^[A-Za-z0-9_]+$') {
-  throw "GitHub token contains invalid characters."
+$separatorIndex = $PackageId.IndexOf(".")
+if ($separatorIndex -lt 1 -or $separatorIndex -eq $PackageId.Length - 1) {
+  throw "PackageId must contain a publisher and package name separated by a period."
 }
 
-$versionDir = Join-Path $pwd "winget-manifests" "manifests" "t" $cfg.publisher $cfg.packageName $Version
-New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
+$publisher = $PackageId.Substring(0, $separatorIndex)
+$packageIdentifierName = $PackageId.Substring($separatorIndex + 1)
+$publisherInitial = $publisher.Substring(0, 1).ToLowerInvariant()
+$installerSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToUpperInvariant()
+$versionDirectory = Join-Path $manifestRoot "manifests"
+$versionDirectory = Join-Path $versionDirectory $publisherInitial
+$versionDirectory = Join-Path $versionDirectory $publisher
+$versionDirectory = Join-Path $versionDirectory $packageIdentifierName
+$versionDirectory = Join-Path $versionDirectory $Version
+New-Item -ItemType Directory -Path $versionDirectory -Force | Out-Null
 
-$installerPath = Join-Path $versionDir "$($cfg.packageId).installer.yaml"
 $dependencyLines = @()
 if ($cfg.dependencies -and $cfg.dependencies.Count -gt 0) {
   $dependencyLines += "Dependencies:"
@@ -56,59 +81,101 @@ if ($cfg.dependencies -and $cfg.dependencies.Count -gt 0) {
     $dependencyLines += "  - PackageIdentifier: $dependency"
   }
 }
-$installerLines = @(
-  "# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json"
-  "PackageIdentifier: $($cfg.packageId)"
-  "PackageVersion: $Version"
-) + $dependencyLines + @(
-  "Installers:"
-  "- Architecture: x64"
-  "  InstallerUrl: $url"
-  "  InstallerSha256: $installerSha256"
-  "  InstallerType: zip"
-  "  NestedInstallerType: portable"
-  "  NestedInstallerFiles:"
-  "    - RelativeFilePath: $nestedInstallerPath"
-  "      PortableCommandAlias: kc"
-  "ManifestType: installer"
-  "ManifestVersion: 1.12.0"
-) 
-$installerLines -join "`n" | Out-File -FilePath $installerPath -Encoding utf8
 
-$defaultPath = Join-Path $versionDir "$($cfg.packageId).yaml"
-@(
-  "# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json"
-  "PackageIdentifier: $($cfg.packageId)"
-  "PackageVersion: $Version"
-  "DefaultLocale: en-US"
-  "ManifestType: version"
-  "ManifestVersion: 1.12.0"
-) -join "`n" | Out-File -FilePath $defaultPath -Encoding utf8
+$installerManifest = @"
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+PackageIdentifier: $PackageId
+PackageVersion: $Version
+$($dependencyLines -join "`n")
+Installers:
+- Architecture: x64
+  Scope: user
+  InstallerUrl: $InstallerUrl
+  InstallerSha256: $installerSha256
+  InstallerType: zip
+  NestedInstallerType: portable
+  NestedInstallerFiles:
+  - RelativeFilePath: $expectedEntryScript
+- Architecture: x64
+  Scope: machine
+  InstallerUrl: $InstallerUrl
+  InstallerSha256: $installerSha256
+  InstallerType: zip
+  NestedInstallerType: portable
+  NestedInstallerFiles:
+  - RelativeFilePath: $expectedEntryScript
+ArchiveBinariesDependOnPath: true
+ManifestType: installer
+ManifestVersion: 1.12.0
+"@
 
-$localePath = Join-Path $versionDir "$($cfg.packageId).locale.en-US.yaml"
-@(
-  "# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json"
-  "PackageIdentifier: $($cfg.packageId)"
-  "PackageVersion: $Version"
-  "PackageLocale: en-US"
-  "Publisher: $($cfg.publisher)"
-  "PublisherUrl: https://github.com/$($cfg.publisher)"
-  "PublisherSupportUrl: https://github.com/$($cfg.packageRepository)/issues"
-  "PackageName: $($cfg.packageName)"
-  "PackageUrl: https://github.com/$($cfg.packageRepository)"
-  "License: $($cfg.license)"
-  "LicenseUrl: $($cfg.licenseUrl)"
-  "ShortDescription: $($cfg.shortDescription)"
-  "ManifestType: defaultLocale"
-  "ManifestVersion: 1.12.0"
-) -join "`n" | Out-File -FilePath $localePath -Encoding utf8
+$versionManifest = @"
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
+PackageIdentifier: $PackageId
+PackageVersion: $Version
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.12.0
+"@
 
-if ((Get-ChildItem -Path $versionDir -File -Filter "*.yaml").Count -ne 3) {
-  throw "Expected exactly three manifest YAML files in '$versionDir'."
+$localeManifest = @"
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+PackageIdentifier: $PackageId
+PackageVersion: $Version
+PackageLocale: en-US
+Publisher: $($cfg.publisher)
+PublisherUrl: https://github.com/$($cfg.publisher)
+PublisherSupportUrl: https://github.com/$($cfg.packageRepository)/issues
+PackageName: $($cfg.packageName)
+PackageUrl: https://github.com/$($cfg.packageRepository)
+License: $($cfg.license)
+LicenseUrl: $($cfg.licenseUrl)
+ShortDescription: $($cfg.shortDescription)
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0
+"@
+
+$manifestFiles = @{
+  "$PackageId.installer.yaml" = $installerManifest
+  "$PackageId.yaml" = $versionManifest
+  "$PackageId.locale.en-US.yaml" = $localeManifest
+}
+$encoding = [System.Text.UTF8Encoding]::new($false)
+foreach ($fileName in $manifestFiles.Keys) {
+  $filePath = Join-Path $versionDirectory $fileName
+  [System.IO.File]::WriteAllText($filePath, $manifestFiles[$fileName], $encoding)
 }
 
-Write-Output "Submitting $($cfg.packageId) $Version using upstream installer URL: $url"
-& .\wingetcreate.exe submit "$versionDir" --token $token
+if ($installerManifest -notmatch "(?m)^  Scope: user\r?$" -or $installerManifest -notmatch "(?m)^  Scope: machine\r?$") {
+  throw "The installer manifest must include both user and machine scopes."
+}
+
+$manifestApiUrl = "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/$publisherInitial/$publisher/$packageIdentifierName/$Version"
+$versionAlreadyExists = $false
+try {
+  Invoke-RestMethod -Headers @{
+    Authorization = "Bearer $Token"
+    "User-Agent" = "keycloak-winget-publish"
+  } -Uri $manifestApiUrl | Out-Null
+  $versionAlreadyExists = $true
+}
+catch {
+  $statusCode = 0
+  if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+    $statusCode = [int]$_.Exception.Response.StatusCode
+  }
+  if ($statusCode -ne 404) {
+    throw "Unable to check whether winget version '$Version' already exists: $($_.Exception.Message)"
+  }
+}
+
+$submitArguments = @("submit", "--token", $Token, "--no-open")
+if ($versionAlreadyExists) {
+  $submitArguments += @("--replace", $Version)
+}
+$submitArguments += $versionDirectory
+
+& $WingetCreatePath @submitArguments
 if ($LASTEXITCODE -ne 0) {
-  throw "wingetcreate failed to submit the package manifest."
+  throw "wingetcreate submit failed with exit code $LASTEXITCODE."
 }

@@ -62,11 +62,6 @@ jobs:
             throw "$entry not found in $root"
           }
 
-          (Get-Content launcher.cs -Raw).Replace('@ENTRY_SCRIPT@', $entry) | Set-Content -Path launcher.build.cs -Encoding utf8
-          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          & $csc /nologo /target:exe /out:"$root\$($cfg.launcher)" launcher.build.cs
-          if ($LASTEXITCODE -ne 0) { throw "Failed to compile launcher." }
-
           $packagePath = "$($cfg.packageName)-$env:VERSION-Windows-x64.zip"
           Compress-Archive -Path $root -DestinationPath $packagePath
           "PACKAGE_PATH=$packagePath" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -75,7 +70,7 @@ jobs:
         run: |
           $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
           $title = "$($cfg.packageName) $env:VERSION"
-          $notes = "$($cfg.packageName) $env:VERSION package for winget. Includes the upstream distribution and the $($cfg.launcher) launcher for $($cfg.entryScript)."
+          $notes = "$($cfg.packageName) $env:VERSION package for winget. Includes the upstream distribution with its Windows batch entry point."
 
           $releaseExists = $false
           $releaseUrl = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$env:VERSION"
@@ -119,9 +114,27 @@ jobs:
     runs-on: windows-latest
     env:
       WINGETCREATE_VERSION: 1.12.13.0
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Resolve package URL
+        id: release
+        run: |
+          $cfg = Get-Content winget.config.json -Raw | ConvertFrom-Json
+          $version = "${{ needs.build.outputs.version }}"
+          $releaseUrl = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$version"
+          $release = Invoke-RestMethod -Headers @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            "User-Agent" = "keycloak-winget-publish"
+          } -Uri $releaseUrl
+          $assetName = "$($cfg.packageName)-$version-Windows-x64.zip"
+          $asset = @($release.assets | Where-Object { $_.name -eq $assetName })
+          if ($asset.Count -ne 1) {
+            throw "Expected exactly one package asset named '$assetName'; found $($asset.Count)."
+          }
+          "installer_url=$($asset[0].browser_download_url)" >> $env:GITHUB_OUTPUT
 
       - name: Install wingetcreate
         run: |
@@ -135,4 +148,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          .\.github\scripts\submit-winget.ps1 -Version "${{ needs.build.outputs.version }}"
+          .\.github\scripts\submit-winget.ps1 `
+            -WingetCreatePath ".\wingetcreate.exe" `
+            -PackageId "taizod1024.keycloak" `
+            -Version "${{ needs.build.outputs.version }}" `
+            -InstallerUrl "${{ steps.release.outputs.installer_url }}" `
+            -Token $env:WINGET_TOKEN
